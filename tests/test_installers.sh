@@ -26,6 +26,11 @@ assert_contains(){
   case "$actual" in *"$expected"*) pass "$name" ;; *) fail "$name (missing [$expected] in [$actual])" ;; esac
 }
 
+assert_not_contains(){
+  local actual="$1" unwanted="$2" name="$3"
+  case "$actual" in *"$unwanted"*) fail "$name (found [$unwanted])" ;; *) pass "$name" ;; esac
+}
+
 assert_true(){
   local name="$1"; shift
   if "$@"; then pass "$name"; else fail "$name"; fi
@@ -62,9 +67,72 @@ if grep -qF 'INSTALLER_LIB_ONLY' "$ROOT/install.sh"; then
   broken_tool(){ return 1; }
   assert_true 'healthy command is usable' command_ok healthy_tool
   assert_false 'broken command is not usable' command_ok broken_tool
+  VERSION_TIMEOUT_SECONDS=1
+  slow_tool(){ sleep 2; printf '%s\n' 'slow-tool 1.0.0'; }
+  assert_false 'hung macOS version command times out instead of blocking readiness' command_ok slow_tool
+  unset -f slow_tool
+  unset VERSION_TIMEOUT_SECONDS
   function_exists(){ type "$1" >/dev/null 2>&1; }
   assert_true 'PATH repair uses a tool health dispatcher' function_exists tool_ok
   assert_true 'Node architecture mapping helper exists' function_exists node_archive_arch
+  assert_true 'macOS exposes disk requirement evaluation' function_exists space_meets_requirement
+  assert_true 'macOS exposes course workspace validation' function_exists course_workspace_ready
+  assert_true 'macOS exposes direction checklist lookup' function_exists direction_checklist_found
+  assert_true 'macOS exposes four-file prework validation' function_exists course_prework_files_ready
+  assert_true 'macOS exposes course data package validation' function_exists course_data_package_ready
+  assert_true 'macOS exposes Feishu desktop detection' function_exists feishu_desktop_installed
+  assert_true 'macOS exposes required readiness classification' function_exists readiness_status
+
+  if function_exists space_meets_requirement; then
+    assert_true '10GB exactly satisfies the course disk requirement' space_meets_requirement 10737418240 10
+    assert_false 'less than 10GB fails the course disk requirement' space_meets_requirement 9663676416 10
+  fi
+  course_tmp=$(mktemp -d)
+  if function_exists course_workspace_ready; then
+    assert_false 'incomplete course workspace is not ready' course_workspace_ready "$course_tmp"
+    for dir in '01-我的业务' '02-我自己' '03-数据包' '04-机会卡' '05-我的Agent'; do mkdir -p "$course_tmp/$dir"; done
+    assert_true 'all five course folders make the workspace ready' course_workspace_ready "$course_tmp"
+  fi
+  if function_exists direction_checklist_found; then
+    assert_false 'missing direction checklist is reported' direction_checklist_found "$course_tmp"
+    printf 'directions' > "$course_tmp/01-我的业务/我的方向清单.md"
+    assert_true 'direction checklist is found recursively' direction_checklist_found "$course_tmp"
+  fi
+  if function_exists course_prework_files_ready; then
+    assert_false 'direction checklist alone does not complete prework' course_prework_files_ready "$course_tmp"
+    printf 'profile' > "$course_tmp/02-我自己/人格档案.json"
+    printf 'guide' > "$course_tmp/02-我自己/AI协作说明.md"
+    printf 'business' > "$course_tmp/01-我的业务/我的业务说明书.md"
+    assert_true 'all four official prework files are detected' course_prework_files_ready "$course_tmp"
+  fi
+  if function_exists course_data_package_ready; then
+    assert_false 'empty course data folder is not ready' course_data_package_ready "$course_tmp"
+    touch "$course_tmp/03-数据包/ABA_原始数据.zip"
+    assert_false 'downloaded zip without extracted data is not ready' course_data_package_ready "$course_tmp"
+    COURSE_DATA_MIN_BYTES=1
+    export COURSE_DATA_MIN_BYTES
+    printf 'data' > "$course_tmp/03-数据包/W1.json.gz"
+    assert_true 'extracted course data is detected' course_data_package_ready "$course_tmp"
+    unset COURSE_DATA_MIN_BYTES
+  fi
+  if function_exists feishu_desktop_installed; then
+    assert_false 'missing Feishu app is reported' feishu_desktop_installed "$course_tmp/Feishu.app"
+    mkdir -p "$course_tmp/Feishu.app"
+    assert_true 'Feishu app candidate is detected' feishu_desktop_installed "$course_tmp/Feishu.app"
+  fi
+  if function_exists readiness_status; then
+    assert_eq "$(readiness_status 1 1 1 1 1 1 1 1)" 'ready' 'all required checks produce ready status'
+    assert_eq "$(readiness_status 1 1 1 1 1 1 1 0)" 'action_required' 'one failed required check blocks readiness'
+  fi
+  rm -rf "$course_tmp"
+
+  feishu_json='{"versions":{"MacOS_m1":{"download_link":"https://official.example/Feishu-arm64.dmg"},"MacOS":{"download_link":"https://official.example/Feishu-x64.dmg"}}}'
+  if function_exists feishu_download_url_from_json; then
+    assert_eq "$(printf '%s' "$feishu_json" | feishu_download_url_from_json MacOS_m1)" 'https://official.example/Feishu-arm64.dmg' 'Feishu parser selects Apple Silicon package'
+    assert_eq "$(printf '%s' "$feishu_json" | feishu_download_url_from_json MacOS)" 'https://official.example/Feishu-x64.dmg' 'Feishu parser selects Intel package'
+  else
+    fail 'macOS exposes official Feishu package parser'
+  fi
 
   codex(){ return 1; }
   assert_false 'broken Codex is not reported installed' codex_ok
@@ -101,6 +169,16 @@ if grep -qF 'INSTALLER_LIB_ONLY' "$ROOT/install.sh"; then
   assert_contains "$permission_hint" '权限' 'permission failures get an actionable hint'
   assert_contains "$disk_hint" '磁盘空间' 'disk failures get an actionable hint'
   assert_contains "$platform_hint" '系统或芯片' 'platform failures get an actionable hint'
+
+  node_install_calls=0
+  node_ok(){ return 1; }
+  install_node(){ node_install_calls=$((node_install_calls + 1)); return 0; }
+  lark_ok(){ return 1; }
+  ensure_npm_user_prefix(){ return 0; }
+  ensure_npm_user_cache(){ return 0; }
+  ask_continue(){ return 1; }
+  do_larkcli >/dev/null
+  assert_eq "$node_install_calls" '0' 'skipping optional Feishu CLI does not install Node on macOS'
 else
   fail 'install.sh supports side-effect-free library loading'
 fi
@@ -119,14 +197,36 @@ assert_file_contains 'install.sh' 'hdiutil verify "$dmg"' 'macOS verifies the Op
 assert_file_contains 'install.sh' 'TeamIdentifier=2DC432GLL2' 'macOS verifies the OpenAI signing team'
 assert_file_contains 'install.sh' 'com.openai.codex' 'macOS verifies the current desktop bundle identifier'
 assert_file_not_contains 'install.sh' '打开 Codex App 下载页？' 'macOS no longer stops at the Codex download page'
-installed_branch=$(awk '/if all_installed; then/{found=1} found{print} found && /return 0/{exit}' "$ROOT/install.sh")
+installed_branch=$(awk '/^  if course_ready; then$/{found=1} found{print} found && /return 0/{exit}' "$ROOT/install.sh")
 assert_contains "$installed_branch" 'do_clients' 'macOS still offers desktop installation when CLI tools are already ready'
+assert_contains "$installed_branch" 'do_larkcli' 'macOS still offers optional Feishu CLI when official requirements are ready'
+setup_workspace_body=$(awk '/^setup_workspace\(\)/,/^}/' "$ROOT/install.sh")
+assert_not_contains "$setup_workspace_body" "for dir in '01-我的业务'" 'macOS leaves course subfolder creation to the official prework package'
 assert_file_not_contains 'install.sh' 'universal\.dmg' 'Obsidian does not depend on obsolete universal.dmg naming'
-assert_file_not_contains 'install.sh' 'https://www.google.com' 'network precheck only uses actual dependencies'
 assert_file_contains 'install.sh' '飞书初始化失败' 'macOS reports Lark initialization failure'
 assert_file_contains 'install.sh' '安装检查通过，不代表已经登录' 'installed-only path does not imply authentication'
+assert_file_contains 'install.sh' 'https://www.feishu.cn/api/downloads' 'macOS uses the official Feishu downloads API'
+assert_file_contains 'install.sh' 'https://www.google.com/generate_204' 'macOS checks course access to Google'
+assert_file_contains 'install.sh' 'osascript' 'macOS provides a native final result dialog'
 
 printf '%s\n' '== Windows static guards =='
+if command -v pwsh.exe >/dev/null 2>&1; then
+  windows_test=$(cygpath -w "$ROOT/tests/test_install_ps1.ps1")
+  if pwsh.exe -NoProfile -File "$windows_test"; then pass 'Windows runtime timeout regression'; else fail 'Windows runtime timeout regression'; fi
+elif command -v pwsh >/dev/null 2>&1; then
+  if pwsh -NoProfile -File "$ROOT/tests/test_install_ps1.ps1"; then pass 'Windows runtime timeout regression'; else fail 'Windows runtime timeout regression'; fi
+else
+  printf '%s\n' 'SKIP  Windows runtime timeout regression (PowerShell unavailable)'
+fi
+
+course_ready_body=$(awk '/^course_ready\(\)/,/^}/' "$ROOT/install.sh")
+assert_not_contains "$course_ready_body" 'lark_ok' 'Feishu CLI does not block official Shenzhen readiness'
+assert_not_contains "$course_ready_body" 'node_ok' 'Node does not block official Shenzhen readiness'
+assert_contains "$course_ready_body" 'course_prework_files_ready' 'official four-file prework blocks readiness when missing'
+assert_contains "$course_ready_body" 'course_data_package_ready' 'official course data package blocks readiness when missing'
+assert_file_contains 'install.sh' 'https://scys.com/form/z27Vz6Fl' 'macOS prints the official self-check form link'
+assert_file_contains 'install.sh' 'https://open.sellersprite.com/mcp' 'macOS prints the SellerSprite registration link'
+assert_file_contains 'install.ps1' 'if(Ask "检查 / 安装可选增强工具' 'Windows still offers optional tools when official requirements are ready'
 assert_file_contains 'install.ps1' 'function Get-WindowsArch' 'Windows has native architecture detection'
 assert_file_contains 'install.ps1' 'Get-CimInstance Win32_Processor' 'Windows architecture detection uses CIM'
 assert_file_contains 'install.ps1' "if((Get-WindowsArch) -eq 'ARM64')" 'Windows ARM64 is handled explicitly'
@@ -152,9 +252,12 @@ assert_contains "$command_file_branch" 'catch { continue }' 'Windows skips malfo
 assert_file_contains 'install.ps1' '32 位 Windows' '32-bit Windows gets an explicit unsupported message'
 assert_file_contains 'install.ps1' '飞书初始化失败' 'Windows reports Lark initialization failure'
 assert_file_contains 'install.ps1' '飞书授权失败' 'Windows reports Lark authorization failure'
-assert_file_contains 'install.ps1' '$script:FAILED+="飞书 Agent Skills"' 'missing Windows Lark skills remain a failure'
+assert_file_contains 'install.ps1' '$script:OPTIONAL_FAILED+="飞书 Agent Skills"' 'missing Windows Lark skills remain optional'
 assert_file_contains 'install.ps1' '$script:FAILED+="Codex Windows sandbox 辅助程序"' 'missing Codex sandbox helper remains a failure'
 assert_file_contains 'install.ps1' '$global:LASTEXITCODE = 1' 'Windows exposes incomplete final status'
+assert_file_contains 'install.ps1' "Winget-Install 'ByteDance.Feishu' '飞书桌面版'" 'Windows installs the official Feishu desktop package'
+assert_file_contains 'install.ps1' 'https://www.google.com/generate_204' 'Windows checks course access to Google'
+assert_file_contains 'install.ps1' 'System.Windows.Forms.MessageBox' 'Windows provides a native final result dialog'
 assert_file_contains 'install.ps1' 'Get-FileHash' 'downloaded Codex sandbox helper is checksum verified'
 assert_file_contains 'install.ps1' 'Get-AuthenticodeSignature' 'downloaded Windows desktop installer is signature verified'
 assert_file_not_contains 'install.ps1' '17763' 'Windows does not enforce an unsupported hard-coded Codex build cutoff'

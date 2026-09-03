@@ -2,7 +2,7 @@
 #   航海家 · AI 工具一键部署助手 (Windows / PowerShell)
 #   检测 -> 安装 -> 授权，全程中文引导，给零基础新手用
 #
-#   工具：Codex / Hermes / 飞书CLI / Obsidian
+#   必装：Codex / 飞书桌面版；可选增强：飞书CLI / Hermes / Obsidian
 #   安装：CLI 走各家官方 PowerShell 安装器；依赖/桌面 App 走 winget；脚本内不含任何密钥
 #
 #   用法（在 PowerShell 里粘贴这一行；确保中文不乱码）：
@@ -100,35 +100,71 @@ function Invoke-NativeWithProgress($filePath,$argumentList,$activity){
 }
 
 # ---------- 状态记录 ----------
-$script:INSTALLED=@(); $script:SKIPPED=@(); $script:FAILED=@()
+$script:INSTALLED=@(); $script:SKIPPED=@(); $script:FAILED=@(); $script:OPTIONAL_FAILED=@()
+$script:COURSE_NETWORK_OK = $false
+$script:COURSE_ROOT = ""
 $global:LASTEXITCODE = 0
 
 # ---------- 工具函数 ----------
 function Has($cmd){ return [bool](Get-Command $cmd -ErrorAction SilentlyContinue) }
+function Version-TimeoutMilliseconds {
+  $seconds = 8
+  $configured = 0
+  if([int]::TryParse($env:VERSION_TIMEOUT_SECONDS, [ref]$configured) -and $configured -gt 0){ $seconds = $configured }
+  return ($seconds * 1000)
+}
+function Invoke-VersionProcess($filePath, $arguments){
+  $script:LAST_VERSION_TIMED_OUT = $false
+  $process = $null
+  try {
+    $start = New-Object System.Diagnostics.ProcessStartInfo
+    $start.FileName = $filePath
+    $start.Arguments = $arguments
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $start
+    if(-not $process.Start()){ return "" }
+    $stdout = $process.StandardOutput.ReadToEndAsync()
+    $stderr = $process.StandardError.ReadToEndAsync()
+    if(-not $process.WaitForExit((Version-TimeoutMilliseconds))){
+      $script:LAST_VERSION_TIMED_OUT = $true
+      try { $process.Kill() } catch {}
+      try { $process.WaitForExit() } catch {}
+      return ""
+    }
+    $out = $stdout.Result
+    $null = $stderr.Result
+    if($process.ExitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace($out)){
+      return (($out -split "`r?`n") | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 1)
+    }
+  } catch {}
+  finally { if($null -ne $process){ $process.Dispose() } }
+  return ""
+}
 function Cmd-Version($cmd){
+  $script:LAST_VERSION_TIMED_OUT = $false
   try {
     $resolved = Get-Command $cmd -ErrorAction Stop
     $path = $resolved.Path
     if([string]::IsNullOrWhiteSpace($path)){ $path = $resolved.Source }
-    if(-not [string]::IsNullOrWhiteSpace($path) -and "$path" -notmatch '\.ps1$'){
-      $out = & $path --version 2>$null | Select-Object -First 1
-      if($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace("$out")){ return "$out" }
+    if(-not [string]::IsNullOrWhiteSpace($path) -and "$path" -match '\.(exe|com)$'){
+      $out = Invoke-VersionProcess $path '--version'
+      if(-not [string]::IsNullOrWhiteSpace($out)){ return $out }
+      if($script:LAST_VERSION_TIMED_OUT){ return "" }
     }
   } catch {}
-  try {
-    $out = cmd /d /c "$cmd --version" 2>$null | Select-Object -First 1
-    if($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace("$out")){ return "$out" }
-  } catch {}
+  if("$cmd" -notmatch '^[A-Za-z0-9._-]+$'){ return "" }
+  $out = Invoke-VersionProcess $env:ComSpec ("/d /s /c `"{0} --version`"" -f $cmd)
+  if(-not [string]::IsNullOrWhiteSpace($out)){ return $out }
   return ""
 }
 function Cmd-Usable($cmd){ return (-not [string]::IsNullOrWhiteSpace((Cmd-Version $cmd))) }
 function File-Version($path){
-  try {
-    if([string]::IsNullOrWhiteSpace($path) -or -not (Test-Path $path)){ return "" }
-    $out = & $path --version 2>$null | Select-Object -First 1
-    if($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace("$out")){ return "$out" }
-  } catch {}
-  return ""
+  if([string]::IsNullOrWhiteSpace($path) -or -not (Test-Path $path)){ return "" }
+  return (Invoke-VersionProcess $path '--version')
 }
 function Lark-SkillsOk {
   if([string]::IsNullOrWhiteSpace($env:USERPROFILE)){ return $false }
@@ -181,8 +217,17 @@ function Add-UserPathEntry($dir){
   }
   return $true
 }
-# Codex 官方 Windows 安装器默认放这里；有时装好了但当前 PowerShell PATH 没刷新。
-function Codex-BinDir { return (Join-Path $env:LOCALAPPDATA "Programs\OpenAI\Codex\bin") }
+# 优先跟随系统实际找到的 codex.exe；桌面版会把它放进带版本哈希的目录。
+function Codex-BinDir([string]$CommandPath="") {
+  if([string]::IsNullOrWhiteSpace($CommandPath)){
+    $command = Get-Command 'codex' -ErrorAction SilentlyContinue | Select-Object -First 1
+    if($command){ $CommandPath = "$($command.Path)" }
+  }
+  if(-not [string]::IsNullOrWhiteSpace($CommandPath) -and (Test-Path -LiteralPath $CommandPath -PathType Leaf)){
+    return (Split-Path -Parent $CommandPath)
+  }
+  return (Join-Path $env:LOCALAPPDATA "Programs\OpenAI\Codex\bin")
+}
 function Ensure-CodexPath {
   $bin = Codex-BinDir
   $exe = Join-Path $bin "codex.exe"
@@ -224,6 +269,11 @@ function Install-CodexOfficial {
     if($null -eq $oldNonInteractive){ Remove-Item Env:\CODEX_NON_INTERACTIVE -ErrorAction SilentlyContinue }
     else { $env:CODEX_NON_INTERACTIVE = $oldNonInteractive }
   }
+}
+function Codex-SandboxSetupOk([string]$CodexPath="") {
+  $bin = if([string]::IsNullOrWhiteSpace($CodexPath)){ Codex-BinDir } else { Codex-BinDir -CommandPath $CodexPath }
+  $dst = Join-Path $bin "codex-windows-sandbox-setup.exe"
+  return (Test-Path -LiteralPath $dst -PathType Leaf)
 }
 function Repair-CodexSandboxSetup {
   $bin = Codex-BinDir
@@ -271,9 +321,9 @@ function Repair-CodexSandboxSetup {
     return (Test-Path $dst)
   } catch { return $false }
 }
-function Codex-Ready { return ((Codex-Ok) -and (Repair-CodexSandboxSetup)) }
-# 是否课程主力命令行工具都已装齐：这里不再卡 Obsidian / 桌面 App，避免明明 CLI 全绿却继续问安装。
-function All-Installed { return ( (Codex-Ok) -and (Cmd-Usable 'hermes') -and (Cmd-Usable 'lark-cli') -and (Lark-SkillsOk) -and (Node-Ok) ) }
+function Codex-Ready { return ((Codex-Ok) -and (Codex-SandboxSetupOk)) }
+# 深圳课程官方必装项；飞书 CLI、Hermes、Obsidian 和 Node.js 不参与就绪判定。
+function All-Installed { return ( (Codex-Ok) -and (Test-FeishuDesktopInstalled) ) }
 
 function Refresh-Path {
   $m=[System.Environment]::GetEnvironmentVariable("Path","Machine")
@@ -477,17 +527,104 @@ function Pkg-Installed($id){
   return ($out -match [regex]::Escape($id))
 }
 
+function Test-SpaceRequirement([long]$FreeBytes, [int]$MinimumGB=10){
+  return ($FreeBytes -ge ([long]$MinimumGB * 1GB))
+}
+function Test-CourseWorkspace([string]$Path){
+  if([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Container)){ return $false }
+  foreach($dir in @('01-我的业务','02-我自己','03-数据包','04-机会卡','05-我的Agent')){
+    if(-not (Test-Path -LiteralPath (Join-Path $Path $dir) -PathType Container)){ return $false }
+  }
+  return $true
+}
+function Find-DirectionChecklist([string]$Path){
+  if([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Container)){ return $null }
+  return (Get-ChildItem -LiteralPath $Path -File -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.Name -like '*方向清单*' } | Select-Object -First 1)
+}
+function Find-CourseNamedFile([string]$Path, [string]$Pattern){
+  if([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Container)){ return $null }
+  return (Get-ChildItem -LiteralPath $Path -File -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.Name -like $Pattern -and $_.Length -gt 0 } | Select-Object -First 1)
+}
+function Test-CoursePreworkFiles([string]$Path){
+  foreach($pattern in @('*人格档案*','*AI*协作说明*','*我的业务说明书*','*方向清单*')){
+    if(-not (Find-CourseNamedFile -Path $Path -Pattern $pattern)){ return $false }
+  }
+  return $true
+}
+function Test-CourseDataPackage([string]$Path){
+  $dataDir = if([string]::IsNullOrWhiteSpace($Path)){ '' } else { Join-Path $Path '03-数据包' }
+  if([string]::IsNullOrWhiteSpace($dataDir) -or -not (Test-Path -LiteralPath $dataDir -PathType Container)){ return $false }
+  [long]$minimum = 2000000000
+  [long]$configured = 0
+  if([long]::TryParse($env:COURSE_DATA_MIN_BYTES, [ref]$configured) -and $configured -ge 0){ $minimum = $configured }
+  [long]$total = (Get-ChildItem -LiteralPath $dataDir -File -Recurse -ErrorAction SilentlyContinue |
+    Where-Object { $_.Extension -ne '.zip' -and $_.Name -notin @('.DS_Store','Thumbs.db') } |
+    Measure-Object -Property Length -Sum).Sum
+  return ($total -ge $minimum)
+}
+function Get-ExistingCourseWorkspace {
+  $candidates = @()
+  if(-not [string]::IsNullOrWhiteSpace($env:COURSE_WORKSPACE)){ $candidates += $env:COURSE_WORKSPACE }
+  $current = (Get-Location).Path
+  if((Split-Path $current -Leaf) -eq '我的跨境Agent大课'){ $candidates += $current }
+  $candidates += (Join-Path $current '我的跨境Agent大课')
+  $candidates += (Join-Path ([Environment]::GetFolderPath('MyDocuments')) '我的跨境Agent大课')
+  foreach($drive in @('D:','E:','F:')){ if(Test-Path "$drive\"){ $candidates += (Join-Path "$drive\" '我的跨境Agent大课') } }
+  foreach($candidate in ($candidates | Select-Object -Unique)){
+    if(Test-Path -LiteralPath $candidate -PathType Container){ return $candidate }
+  }
+  return ""
+}
+function Resolve-CourseRoot {
+  if(-not [string]::IsNullOrWhiteSpace($script:COURSE_ROOT)){ return $script:COURSE_ROOT }
+  $script:COURSE_ROOT = Get-ExistingCourseWorkspace
+  return $script:COURSE_ROOT
+}
+function Test-CourseDiskSpace([string]$Path){
+  $probe = $Path
+  if([string]::IsNullOrWhiteSpace($probe) -or -not (Test-Path -LiteralPath $probe)){ $probe = $env:USERPROFILE }
+  try {
+    $root = [System.IO.Path]::GetPathRoot((Resolve-Path -LiteralPath $probe).Path)
+    $drive = New-Object System.IO.DriveInfo($root)
+    return (Test-SpaceRequirement -FreeBytes $drive.AvailableFreeSpace -MinimumGB 10)
+  } catch { return $false }
+}
+function Test-FeishuDesktopInstalled([string[]]$CandidatePaths=@(), [switch]$SkipPackageLookup){
+  if($CandidatePaths.Count -eq 0){
+    $CandidatePaths = @(
+      (Join-Path $env:LOCALAPPDATA 'Feishu\Feishu.exe'),
+      (Join-Path $env:LOCALAPPDATA 'Programs\Feishu\Feishu.exe'),
+      (Join-Path $env:ProgramFiles 'Feishu\Feishu.exe')
+    )
+    if(-not [string]::IsNullOrWhiteSpace(${env:ProgramFiles(x86)})){ $CandidatePaths += (Join-Path ${env:ProgramFiles(x86)} 'Feishu\Feishu.exe') }
+  }
+  foreach($candidate in $CandidatePaths){ if(Test-Path -LiteralPath $candidate -PathType Leaf){ return $true } }
+  if(-not $SkipPackageLookup -and (Pkg-Installed 'ByteDance.Feishu')){ return $true }
+  return $false
+}
+function Get-ReadinessStatus([bool[]]$RequiredChecks){
+  foreach($check in $RequiredChecks){ if(-not $check){ return 'action_required' } }
+  return 'ready'
+}
+function Get-CourseReadinessStatus {
+  $root = Resolve-CourseRoot
+  return (Get-ReadinessStatus -RequiredChecks @(
+    (Core-PlatformSupported),
+    (Codex-Ready),
+    (Test-FeishuDesktopInstalled),
+    $script:COURSE_NETWORK_OK,
+    (Test-CourseDiskSpace $root),
+    (Test-CourseWorkspace $root),
+    (Test-CoursePreworkFiles $root),
+    (Test-CourseDataPackage $root)
+  ))
+}
+function Course-Ready { return ((Get-CourseReadinessStatus) -eq 'ready') }
+
 # ---------- 网络检测 ----------
 function Test-Url($url){
-  try { Invoke-WebRequest -Uri $url -TimeoutSec 8 -UseBasicParsing -ErrorAction Stop | Out-Null; return $true } catch {}
-  try {
-    $wc = New-Object System.Net.WebClient
-    $wc.Headers.Add("User-Agent", "Mozilla/5.0")
-    $wc.Proxy = [System.Net.WebRequest]::GetSystemWebProxy()
-    if($wc.Proxy){ $wc.Proxy.Credentials = [System.Net.CredentialCache]::DefaultCredentials }
-    $wc.DownloadString($url) | Out-Null
-    return $true
-  } catch { return $false }
+  try { Invoke-WebRequest -Uri $url -TimeoutSec 8 -UseBasicParsing -ErrorAction Stop | Out-Null; return $true }
+  catch { return $false }
 }
 function Test-AnyUrl($urls){
   foreach($url in $urls){ if(Test-Url $url){ return $true } }
@@ -495,6 +632,14 @@ function Test-AnyUrl($urls){
 }
 function Check-Network {
   Hr; Say "先检查实际下载源（仅提醒，不把所有失败都归为网络）"; Hr
+  $script:COURSE_NETWORK_OK = $true
+  foreach($courseCheck in @(
+    @{n='GitHub 课程网络'; u='https://github.com'},
+    @{n='Google 课程网络'; u='https://www.google.com/generate_204'}
+  )){
+    if(Test-Url $courseCheck.u){ Ok "$($courseCheck.n) 可访问" }
+    else { Warn "$($courseCheck.n) 当前不可访问；课程现场的数据与 AI 工具可能受影响。"; $script:COURSE_NETWORK_OK = $false }
+  }
   $checks = @(
     @{n='GitHub Raw'; u='https://raw.githubusercontent.com/xitangwang/mac-onboarding-setup/main/go.ps1'},
     @{n='Codex 官方安装源'; u='https://chatgpt.com/codex/install.ps1'},
@@ -515,21 +660,35 @@ function Detect {
   Say "  本机：$WinName (build $Build) / $Arch"
   if(-not [Environment]::Is64BitProcess){ Warn "你开的是 32 位 PowerShell。建议关掉、用开始菜单里普通的「Windows PowerShell」或「终端」重开，否则有些工具可能装不上。" }
   if(-not [Environment]::Is64BitOperatingSystem -or $Arch -eq 'x86'){
-    Bad "检测到 32 位 Windows：Codex、Hermes 和飞书 CLI 的当前版本都需要 64 位系统，本机无法完成主力工具安装。"
+    Bad "检测到 32 位 Windows：深圳课程核心工具 Codex 需要 64 位系统，本机无法完成必装工具安装。"
   } elseif($Build -lt 10240){
     Bad "当前 Windows 版本早于 Windows 10，不在这套工具的支持范围内。"
   }
   Say "  命令行工具(CLI)=终端里用、功能最全；桌面 App=图形界面、更直观。两者不冲突、可以都装。"
   Say "  >> 命令行工具（CLI）"
-  if(Codex-Ok){ Ok "Codex (CLI) 已装" } else { Bad "Codex (CLI) 未装" }
-  if(Cmd-Usable 'hermes'){ Ok "Hermes (CLI) 已装" } else { Bad "Hermes (CLI) 未装" }
-  if(Cmd-Usable 'lark-cli'){ Ok "飞书 CLI 已装" } else { Bad "飞书 CLI 未装" }
-  if(Lark-SkillsOk){ Ok "飞书官方 Agent Skills 已装" } else { Warn "飞书官方 Agent Skills 未补齐（装飞书 CLI 时会一起补）" }
+  if(Codex-Ok){
+    Ok "Codex (CLI) 已装"
+    if(Codex-SandboxSetupOk){ Ok "Codex Windows sandbox 辅助程序已就绪" }
+    else { Bad "Codex Windows sandbox 辅助程序缺失（安装模式会尝试自动修复）" }
+  } else { Bad "Codex (CLI) 未装" }
+  if(Cmd-Usable 'hermes'){ Ok "Hermes (CLI，可选) 已装" } else { Say "  -- Hermes (CLI，可选) 未装或命令无响应" }
+  if(Cmd-Usable 'lark-cli'){ Ok "飞书 CLI（可选）已装" } else { Say "  -- 飞书 CLI（可选增强）未装" }
+  if(Lark-SkillsOk){ Ok "飞书官方 Agent Skills（可选）已装" } else { Say "  -- 飞书官方 Agent Skills（可选）未补齐" }
   Say "  >> 桌面 App / 知识库（后面安装步骤会用 winget 自动判断 / 安装）"
+  if(Test-FeishuDesktopInstalled){ Ok "飞书桌面版 已装" } else { Bad "飞书桌面版 未装（深圳课程必装）" }
+  if(Pkg-Installed 'Obsidian.Obsidian'){ Ok "Obsidian（可选）已装" } else { Say "  -- Obsidian（可选）未装" }
+  $courseRoot = Resolve-CourseRoot
+  Say "  >> 深圳课程课前检查"
+  if(Test-CourseDiskSpace $courseRoot){ Ok "可用磁盘空间不少于 10GB" } else { Bad "可用磁盘空间不足 10GB 或无法读取" }
+  if(Test-CourseWorkspace $courseRoot){ Ok "课程五个文件夹已就绪：$courseRoot" } else { Bad "未找到完整的『我的跨境Agent大课』五个文件夹" }
+  $direction = Find-DirectionChecklist $courseRoot
+  if($direction){ Ok "方向清单已找到：$($direction.FullName)" } else { Bad "方向清单尚未找到（需完成课前作业）" }
+  if(Test-CoursePreworkFiles $courseRoot){ Ok "课前四份文件已齐：人格档案 / AI协作说明 / 我的业务说明书 / 方向清单" } else { Bad "课前四份文件未齐（需完成作业③的课前任务包）" }
+  if(Test-CourseDataPackage $courseRoot){ Ok "课程 ABA 数据包已解压放入 03-数据包（不少于约 2GB）" } else { Bad "课程 ABA 数据包未就绪（不能只有 ZIP，需解压到 03-数据包）" }
   Say "  -- 下面是依赖，不用单独管 --"
-  if(Node-Ok){ Ok "Node.js $(Cmd-Version 'node') / npm $(Cmd-Version 'npm')" }
-  elseif((Has 'node') -or (Has 'npm')){ Warn "Node 或 npm 命令存在但不能正常执行（装飞书 CLI 前会修复）" }
-  else { Warn "Node.js / npm 没有（装飞书 CLI 时自动装）" }
+  if(Node-Ok){ Ok "Node.js / npm（飞书 CLI 可选依赖）：$(Cmd-Version 'node') / npm $(Cmd-Version 'npm')" }
+  elseif((Has 'node') -or (Has 'npm')){ Warn "Node 或 npm 命令存在但不能正常执行；仅影响飞书 CLI 可选增强" }
+  else { Say "  -- Node.js / npm（可选）未装；选择飞书 CLI 时会自动补齐" }
   if(Cmd-Usable 'git'){ Ok "Git 已就绪" } else { Say "  -- Git 未就绪；Hermes 官方安装器会按用户目录自行处理，不要求预装系统 Git" }
 }
 
@@ -537,23 +696,25 @@ function Detect {
 function Default-WorkspacePath {
   foreach($drive in @('D:','E:','F:')){
     $root = "$drive\"
-    if(Test-Path $root){ return (Join-Path $root "AI-Workspace") }
+    if(Test-Path $root){ return (Join-Path $root "我的跨境Agent大课") }
   }
-  return (Join-Path $env:USERPROFILE "AI-Workspace")
+  return (Join-Path ([Environment]::GetFolderPath('MyDocuments')) "我的跨境Agent大课")
 }
 function Setup-Workspace {
-  Step "先建一个工作区（你的知识库文件夹）"
-  Say "给一个固定的文件夹放知识库 + AI 工作区，以后 Obsidian 和 AI 都在这里干活——选个你以后不会乱动的位置。"
+  Step "准备『我的跨境Agent大课』课程文件夹"
+  Say "最新版课前手册要求由作业③的『课前任务包』让 Codex 创建五个子文件夹并写入内容。"
+  Say "本脚本只确定课程根目录，不提前创建空子文件夹，也不会覆盖你已有的文档。"
   Say "  建议放到 C 盘以外的数据盘，C 盘通常空间小；也别放在 OneDrive 同步的「文档」里（同步大文件容易出问题、路径还会变）。"
   $default = Default-WorkspacePath
   Say "  直接回车用默认：$default"
-  Say "  或粘贴你想要的完整路径（例如 D:\AI-Workspace、E:\AI-Workspace）："
+  Say "  或粘贴你想要的完整路径（例如 D:\我的跨境Agent大课）："
   $inp = Read-Host "工作区路径"
   if([string]::IsNullOrWhiteSpace($inp)){ $script:WORKSPACE = $default } else { $script:WORKSPACE = $inp }
   try {
     New-Item -ItemType Directory -Force -Path $script:WORKSPACE -ErrorAction Stop | Out-Null
+    $script:COURSE_ROOT = $script:WORKSPACE
     Set-Location $script:WORKSPACE -ErrorAction Stop
-    Ok "工作区：$script:WORKSPACE（已进入，后面装的工具都以这里为工作目录）"
+    Ok "课程根目录：$script:WORKSPACE（五个子文件夹由课前任务包创建）"
     return $true
   } catch {
     Bad "工作区创建或进入失败：$script:WORKSPACE"
@@ -625,8 +786,8 @@ function Do-Hermes {
   Refresh-Path
   Add-UserPathEntry (Hermes-BinDir) | Out-Null
   if(Cmd-Usable 'hermes'){ Ok "Hermes 安装成功"; $script:INSTALLED+="Hermes" }
-  elseif(-not $ok){ Bad "Hermes 安装失败：可能是 GitHub/uv/Python/Node 下载、代理、权限、磁盘空间或杀毒软件拦截。原始错误见上方。"; $script:FAILED+="Hermes（安装失败）" }
-  else { Bad "Hermes 安装器结束后 hermes --version 仍失败；不能仅按 PATH 问题标记为成功。"; $script:FAILED+="Hermes（安装后不可用）" }
+  elseif(-not $ok){ Warn "Hermes（可选）安装失败：可能是 GitHub/uv/Python/Node 下载、代理、权限、磁盘空间或杀毒软件拦截。原始错误见上方。"; $script:OPTIONAL_FAILED+="Hermes（安装失败）" }
+  else { Warn "Hermes（可选）安装器结束后 hermes --version 仍失败。"; $script:OPTIONAL_FAILED+="Hermes（安装后不可用）" }
 }
 
 function Install-Node {
@@ -644,26 +805,26 @@ function Install-Node {
 }
 
 function Ensure-BaseDeps {
-  Hr; Say "先检查飞书 CLI 的基础依赖（Node / npm）"; Hr
+  Hr; Say "先检查基础环境（可选工具依赖会按需安装）"; Hr
   Say "  Hermes 官方安装器会在当前用户目录管理 Git、Python 和 Node，不要求预装系统级 Git，也不需要管理员权限。"
-  if(Node-Ok){ Ok "Node.js / npm —— 已就绪（$(Cmd-Version 'node') / npm $(Cmd-Version 'npm')）" }
-  elseif(-not (Install-Node)){ Warn "Node / npm 尚未就绪；飞书 CLI 步骤会给出最终处理结果。" }
+  if(Node-Ok){ Ok "Node.js / npm（飞书 CLI 可选依赖）—— 已就绪（$(Cmd-Version 'node') / npm $(Cmd-Version 'npm')）" }
+  else { Say "  -- Node.js 暂未安装；只有选择飞书 CLI 时才会自动安装。" }
 }
 
 function Do-Larkcli {
   Step "飞书 CLI —— 让 AI 直接读写你的飞书表格 / 文档"
-  if(-not (Node-Ok)){
-    if(-not (Install-Node)){
-      Bad "Node 自动安装失败：请检查上方 winget 返回码、Store/公司策略、UAC、网络、权限和架构；或手动安装 Node.js LTS。"
-      $script:FAILED+="Node.js（飞书 CLI 依赖）"
-      $script:SKIPPED+="飞书 CLI（缺 Node）"; return
-    }
-  }
   if(Cmd-Usable 'lark-cli'){
     Ok "已检测到飞书 CLI：$(Cmd-Version 'lark-cli')"
     Say "  为了补齐官方 AI Agent Skills，这一步会再运行一次官方安装器（已装好的会自动升级/跳过）。"
   }
   if(-not (Ask "现在安装 / 补齐飞书 CLI + 官方 AI Agent Skills？")){ $script:SKIPPED+="飞书 CLI"; return }
+  if(-not (Node-Ok)){
+    if(-not (Install-Node)){
+      Warn "Node 自动安装失败：请检查上方 winget 返回码、Store/公司策略、UAC、网络、权限和架构；或手动安装 Node.js LTS。"
+      $script:OPTIONAL_FAILED+="Node.js（飞书 CLI 可选依赖）"
+      $script:SKIPPED+="飞书 CLI（缺 Node）"; return
+    }
+  }
   Say "  通过官方安装器安装：CLI 本体 + 飞书官方 AI Agent Skills 会一起装好……"
   $rc=Invoke-NativeWithProgress 'cmd.exe' @('/d','/c','npx --yes @larksuite/cli@latest install') '飞书 CLI 安装'
   Refresh-Path
@@ -671,27 +832,27 @@ function Do-Larkcli {
   if((Cmd-Usable 'lark-cli') -and (Lark-SkillsOk)){ Ok "飞书 CLI + 官方 Agent Skills 安装成功"; $script:INSTALLED+="飞书 CLI（含官方 Agent Skills）" }
   elseif(Cmd-Usable 'lark-cli'){
     Warn "飞书 CLI 已可用，但官方 Agent Skills 没检测到；本次仍未完整安装。"
-    $script:FAILED+="飞书 Agent Skills"
+    $script:OPTIONAL_FAILED+="飞书 Agent Skills"
   }
   elseif($rc -ne 0){
-    Bad "飞书 CLI 安装失败（npm 返回 $rc）。可能是 npm/二进制下载源、代理、权限、磁盘空间、杀毒软件或架构问题；请保留上方原始输出。"
-    $script:FAILED+="飞书 CLI（安装失败）"
+    Warn "飞书 CLI（可选）安装失败（npm 返回 $rc）。可能是 npm/二进制下载源、代理、权限、磁盘空间、杀毒软件或架构问题；请保留上方原始输出。"
+    $script:OPTIONAL_FAILED+="飞书 CLI（安装失败）"
   }
   else {
-    Bad "安装器返回成功，但 lark-cli --version 仍失败；不能仅按 PATH 问题标记为成功。"
-    $script:FAILED+="飞书 CLI（安装后不可用）"
+    Warn "安装器返回成功，但 lark-cli --version 仍失败；可选增强未完成。"
+    $script:OPTIONAL_FAILED+="飞书 CLI（安装后不可用）"
   }
 }
 
 function Do-Obsidian {
-  Step "Obsidian —— 你的 AI 第二大脑 / 知识库（核心）"
+  Step "Obsidian（可选）—— 你的 AI 第二大脑 / 知识库"
   if(Pkg-Installed 'Obsidian.Obsidian'){ Ok "已安装"; $script:SKIPPED+="Obsidian"; return }
-  if(-not (Ask "现在安装 Obsidian（核心知识库）？")){ $script:SKIPPED+="Obsidian"; return }
+  if(-not (Ask "现在安装 Obsidian（可选知识库）？")){ $script:SKIPPED+="Obsidian"; return }
   Winget-Install 'Obsidian.Obsidian' 'Obsidian' | Out-Null
   if(Pkg-Installed 'Obsidian.Obsidian'){ Ok "Obsidian 安装成功"; $script:INSTALLED+="Obsidian"; return }
   Warn "Obsidian 自动安装未完成。可能是 winget/Store 策略、UAC、网络、权限或软件源问题；手动下载：https://obsidian.md/download"
   Start-Process "https://obsidian.md/download" 2>$null
-  $script:FAILED+="Obsidian（请手动装）"
+  $script:OPTIONAL_FAILED+="Obsidian（请手动装）"
 }
 
 # ---------- 授权 / 登录 ----------
@@ -710,12 +871,12 @@ function Auth-Phase {
       cmd /d /c "lark-cli config init --new"
       if($LASTEXITCODE -ne 0){
         Warn "飞书初始化失败，未继续登录。稍后手动运行：lark-cli config init --new"
-        $script:FAILED += "飞书初始化"
+        $script:OPTIONAL_FAILED += "飞书初始化"
       } else {
         cmd /d /c "lark-cli auth login --recommend"
         if($LASTEXITCODE -ne 0){
           Warn "飞书授权失败或被取消。稍后手动运行：lark-cli auth login --recommend"
-          $script:FAILED += "飞书授权"
+          $script:OPTIONAL_FAILED += "飞书授权"
         } else { Ok "飞书初始化和授权流程已完成" }
       }
     }
@@ -728,6 +889,18 @@ function Auth-Phase {
 }
 
 # ---------- 图形界面：桌面客户端 ----------
+function Do-FeishuDesktop {
+  Step "飞书桌面版 —— 课程资料、学员群和 21 天挑战入口"
+  if(Test-FeishuDesktopInstalled){ Ok "飞书桌面版已安装"; $script:SKIPPED+="飞书桌面版"; return }
+  if(-not (Ask "现在安装飞书桌面版？")){ $script:SKIPPED+="飞书桌面版"; return }
+  Winget-Install 'ByteDance.Feishu' '飞书桌面版' | Out-Null
+  if(Test-FeishuDesktopInstalled){ Ok "飞书桌面版安装成功"; $script:INSTALLED+="飞书桌面版" }
+  else {
+    Bad "飞书桌面版自动安装未完成。请检查 winget、Microsoft Store、UAC和网络；或从 https://www.feishu.cn/download 手动安装。"
+    $script:FAILED+="飞书桌面版"
+  }
+}
+
 function Do-Clients {
   Say ""
   Say "1) Codex 桌面 App（图形界面，需 ChatGPT 账号）"
@@ -774,24 +947,62 @@ function Summary {
   if($script:INSTALLED.Count -gt 0){ Ok "本次新装好："; $script:INSTALLED | ForEach-Object { Say "    - $_" } }
   if($script:SKIPPED.Count  -gt 0){ Say "跳过 / 本来就有："; $script:SKIPPED | ForEach-Object { Say "    - $_" } }
   if($script:FAILED.Count   -gt 0){ Bad "还没搞定（需处理）："; $script:FAILED | ForEach-Object { Say "    - $_" }; Say "  把上面这几行截图发到群里。" }
+  if($script:OPTIONAL_FAILED.Count -gt 0){ Warn "可选工具未完成（不影响深圳课程就绪）："; $script:OPTIONAL_FAILED | ForEach-Object { Say "    - $_" } }
 }
 
 function Show-FinalCheck {
   Hr; Say "最后确认：逐个检查命令是否能用"; Hr
   $codexVer = Command-VersionOrFile 'codex' @(Codex-BinDir) @('codex.exe')
-  if($codexVer){ Ok "Codex 可用：$codexVer" }
+  if($codexVer){
+    Ok "Codex 可用：$codexVer"
+    if(Codex-SandboxSetupOk){ Ok "Codex Windows sandbox 辅助程序可用" }
+    else { Bad "Codex Windows sandbox 辅助程序未就绪" }
+  }
   else {
     Bad "Codex 未识别"
     Say "  修复命令（复制这一行重跑新版一键脚本）："
     Say '  irm https://raw.githubusercontent.com/xitangwang/mac-onboarding-setup/main/go.ps1 | iex'
   }
   $hermesVer = Cmd-Version 'hermes'
-  if($hermesVer){ Ok "Hermes 可用：$hermesVer" } else { Bad "Hermes 未识别" }
+  if($hermesVer){ Ok "Hermes（可选）可用：$hermesVer" } else { Say "  -- Hermes（可选）未识别" }
   $larkVer = Cmd-Version 'lark-cli'
-  if($larkVer){ Ok "飞书 CLI 可用：$larkVer" } else { Bad "飞书 CLI 未识别" }
-  if(Lark-SkillsOk){ Ok "飞书官方 Agent Skills 已就绪" } else { Bad "飞书官方 Agent Skills 未补齐" }
-  if(Node-Ok){ Ok "Node / npm 可用：$(Cmd-Version 'node') / npm $(Cmd-Version 'npm')" } else { Bad "Node 或 npm 不可用" }
-  Say "  以上只验证本机命令，不代表 Codex / 飞书账号已经登录。"
+  if($larkVer){ Ok "飞书 CLI（可选）可用：$larkVer" } else { Say "  -- 飞书 CLI（可选）未识别" }
+  if(Lark-SkillsOk){ Ok "飞书官方 Agent Skills（可选）已就绪" } else { Say "  -- 飞书官方 Agent Skills（可选）未补齐" }
+  if(Node-Ok){ Ok "Node / npm（可选依赖）可用：$(Cmd-Version 'node') / npm $(Cmd-Version 'npm')" } else { Say "  -- Node / npm（可选依赖）不可用" }
+  if(Test-FeishuDesktopInstalled){ Ok "飞书桌面版可用" } else { Bad "飞书桌面版未识别" }
+  $courseRoot = Resolve-CourseRoot
+  if(Test-CourseDiskSpace $courseRoot){ Ok "课程磁盘空间不少于 10GB" } else { Bad "课程磁盘空间不足或无法读取" }
+  if(Test-CourseWorkspace $courseRoot){ Ok "课程五个文件夹已就绪" } else { Bad "课程五个文件夹未就绪" }
+  if(Find-DirectionChecklist $courseRoot){ Ok "方向清单已找到" } else { Bad "方向清单未找到" }
+  if(Test-CoursePreworkFiles $courseRoot){ Ok "课前四份文件已齐" } else { Bad "课前四份文件未齐" }
+  if(Test-CourseDataPackage $courseRoot){ Ok "课程 ABA 数据包已解压就绪" } else { Bad "课程 ABA 数据包未解压或不足约 2GB" }
+  if($script:COURSE_NETWORK_OK){ Ok "Google / GitHub 课程网络可用" } else { Bad "Google / GitHub 课程网络未通过" }
+  Say "  以上不代表付费账号、连续对话、卖家精灵注册、网口/热点或作业提交已经完成。"
+}
+
+function Show-ManualChecklist {
+  Hr; Say "还需本人确认（脚本无法可靠代检）"; Hr
+  Say "  [ ] Google 账号可用；ChatGPT Plus / Pro 已就绪，Codex 能连续对话 5 轮"
+  Say "  [ ] 卖家精灵已注册，并在自检表填写同一注册邮箱"
+  Say "  [ ] 跨境适配度测试已提交；裸问回答和课前作业三件套已提交"
+  Say "  [ ] 自带网口或转换器已用网线测试；手机热点可作为备用网络"
+  Say "  卖家精灵注册：https://open.sellersprite.com/mcp"
+  Say "  课前自检表：https://scys.com/form/z27Vz6Fl"
+}
+
+function Show-NativeResult([string]$Status){
+  if($env:NO_NATIVE_DIALOG -eq '1'){ return }
+  try {
+    Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+    if($Status -eq 'ready'){
+      $message = "深圳大课自动环境检查通过。`n仍需本人确认：Codex连续对话5轮、卖家精灵注册、作业提交、网口和手机热点。"
+      $icon = [System.Windows.Forms.MessageBoxIcon]::Information
+    } else {
+      $message = "深圳大课课前环境仍有待处理项。`n请查看终端中的『最后确认』并截图发给助教。"
+      $icon = [System.Windows.Forms.MessageBoxIcon]::Warning
+    }
+    [System.Windows.Forms.MessageBox]::Show($message, '深圳大课环境体检', [System.Windows.Forms.MessageBoxButtons]::OK, $icon) | Out-Null
+  } catch {}
 }
 
 # ---------- 主流程 ----------
@@ -803,13 +1014,15 @@ function Banner {
 
 function Main {
   if($env:CHECK_ONLY -eq '1'){
-    Banner; Check-Network; Detect; Say ""; Say "（这是只检测模式，没有安装任何东西；也没有检查账号是否已登录）"
-    if(All-Installed){ $global:LASTEXITCODE = 0 } else { $global:LASTEXITCODE = 1 }
+    Banner; Check-Network; Detect; Show-FinalCheck; Show-ManualChecklist; Say ""; Say "（这是只检测模式，没有安装任何东西；人工确认项不计入自动退出码）"
+    $status = Get-CourseReadinessStatus
+    Show-NativeResult $status
+    if($status -eq 'ready'){ $global:LASTEXITCODE = 0 } else { $global:LASTEXITCODE = 1 }
     return
   }
   Clear-Host
   Banner
-  Say "这个脚本帮你检测、安装、并带你登录 6/6 大课要用的工具。"
+  Say "这个脚本帮你检测、安装深圳大课要用的工具，并检查课前环境。"
   Say "工具都从各家官方源下载，脚本里不含任何密钥。"
   Say "按提示回车即可；不想装某个就输 s 跳过；想退出输 q。"
   Check-Network
@@ -819,29 +1032,37 @@ function Main {
   if(-not (Core-PlatformSupported)){
     Hr
     if(-not [Environment]::Is64BitOperatingSystem -or $Arch -eq 'x86'){
-      Bad "32 位 Windows 无法安装当前版本的 Codex、Hermes 和飞书 CLI；请更换 64 位 Windows 10/11 设备。"
+      Bad "32 位 Windows 无法运行深圳课程核心工具 Codex；请更换 64 位 Windows 10/11 设备。"
     } else {
       Bad "当前系统不在支持范围内：需要 64 位 Windows 10/11（x64 或 ARM64）。"
     }
     $global:LASTEXITCODE = 1
     return
   }
-  if(All-Installed){
+  if(Course-Ready){
     if(-not (Repair-CodexSandboxSetup)){
       Warn "Codex 可运行，但 Windows sandbox 辅助程序未补齐。"
       $script:FAILED += "Codex Windows sandbox 辅助程序"
     }
     Hr; Ok "安装检查通过，不代表已经登录：主力命令行工具无需重新安装。"
-    Say "  已确认：Codex / Hermes / 飞书 CLI + 官方 Agent Skills / Node.js 可以执行。"
-    Say "  Obsidian 和桌面 App 属于图形界面补充；需要时再单独装，不再卡住主流程。"
+    Say "  已确认：Codex、飞书桌面版、网络、空间、课前四份文件和课程数据包均通过。"
+    Say "  飞书 CLI、Hermes、Obsidian 和 Node.js 是可选增强，不影响深圳课程自动就绪。"
+    if(Ask "检查 / 安装可选增强工具（飞书 CLI、Hermes、Obsidian）？"){
+      Do-Larkcli
+      Do-Hermes
+      Do-Obsidian
+    }
     Show-FinalCheck
+    Show-ManualChecklist
     if(Ask "进入登录 / 授权检查？"){ Auth-Phase }
     Summary
     if($script:FAILED.Count -gt 0){
       Hr; Bad "安装本体可用，但仍有未完成项。"
+      Show-NativeResult 'action_required'
       $global:LASTEXITCODE = 1
     } else {
       Hr; Ok "安装检查结束；请按上方提示完成账号登录。"
+      Show-NativeResult 'ready'
       $global:LASTEXITCODE = 0
     }
     return
@@ -851,8 +1072,9 @@ function Main {
   if(-not (Setup-Workspace)){ Summary; $global:LASTEXITCODE = 1; return }
   Ensure-BaseDeps
   Do-Codex
-  Do-Hermes
+  Do-FeishuDesktop
   Do-Larkcli
+  Do-Hermes
   Do-Obsidian
   Do-Clients
   Ensure-PowerShellCliPolicy
@@ -861,13 +1083,16 @@ function Main {
   if(Ask "进入第二步：登录授权？"){ Auth-Phase }
   Summary
   Show-FinalCheck
-  if($script:FAILED.Count -gt 0 -or -not (All-Installed)){
+  Show-ManualChecklist
+  if($script:FAILED.Count -gt 0 -or -not (Course-Ready)){
     Hr; Bad "流程结束，但仍有必需项未完成；本次不能标记为全部就绪。"
     Say "请处理上面的具体错误后重跑；已验证可用的工具会自动跳过。"
+    Show-NativeResult 'action_required'
     $global:LASTEXITCODE = 1
   } else {
     Hr; Ok "安装流程完成；命令均已通过版本检测。"
     Say "建议重开 PowerShell，再运行各工具的 --version，并按上方提示确认账号登录。"
+    Show-NativeResult 'ready'
     $global:LASTEXITCODE = 0
   }
 }
