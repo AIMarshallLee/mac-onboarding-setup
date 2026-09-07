@@ -6,7 +6,7 @@
 #   安装：CLI 走各家官方 PowerShell 安装器；依赖/桌面 App 走 winget；脚本内不含任何密钥
 #
 #   用法（在 PowerShell 里粘贴这一行；确保中文不乱码）：
-#     irm https://raw.githubusercontent.com/xitangwang/mac-onboarding-setup/main/go.ps1 | iex
+#     irm https://raw.githubusercontent.com/AIMarshallLee/mac-onboarding-setup/main/go.ps1 | iex
 #   只检测不安装：先 $env:CHECK_ONLY=1; 再跑上面那行
 # ============================================================
 
@@ -641,7 +641,7 @@ function Check-Network {
     else { Warn "$($courseCheck.n) 当前不可访问；课程现场的数据与 AI 工具可能受影响。"; $script:COURSE_NETWORK_OK = $false }
   }
   $checks = @(
-    @{n='GitHub Raw'; u='https://raw.githubusercontent.com/xitangwang/mac-onboarding-setup/main/go.ps1'},
+    @{n='GitHub Raw'; u='https://raw.githubusercontent.com/AIMarshallLee/mac-onboarding-setup/main/go.ps1'},
     @{n='Codex 官方安装源'; u='https://chatgpt.com/codex/install.ps1'},
     @{n='Hermes 官方安装源'; u='https://hermes-agent.nousresearch.com/install.ps1'},
     @{n='Node.js 官方源'; u='https://nodejs.org/dist/index.json'},
@@ -961,7 +961,7 @@ function Show-FinalCheck {
   else {
     Bad "Codex 未识别"
     Say "  修复命令（复制这一行重跑新版一键脚本）："
-    Say '  irm https://raw.githubusercontent.com/xitangwang/mac-onboarding-setup/main/go.ps1 | iex'
+    Say '  irm https://raw.githubusercontent.com/AIMarshallLee/mac-onboarding-setup/main/go.ps1 | iex'
   }
   $hermesVer = Cmd-Version 'hermes'
   if($hermesVer){ Ok "Hermes（可选）可用：$hermesVer" } else { Say "  -- Hermes（可选）未识别" }

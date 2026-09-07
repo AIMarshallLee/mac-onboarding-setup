@@ -649,7 +649,7 @@ check_network(){
   COURSE_NETWORK_OK=1
   check_endpoint "GitHub 课程网络" "https://github.com" || COURSE_NETWORK_OK=0
   check_endpoint "Google 课程网络" "https://www.google.com/generate_204" || COURSE_NETWORK_OK=0
-  check_endpoint "GitHub Raw" "https://raw.githubusercontent.com/xitangwang/mac-onboarding-setup/main/install.sh" || true
+  check_endpoint "GitHub Raw" "https://raw.githubusercontent.com/AIMarshallLee/mac-onboarding-setup/main/install.sh" || true
   check_endpoint "Codex 官方安装源" "https://chatgpt.com/codex/install.sh" || true
   check_endpoint "Hermes 官方安装源" "https://hermes-agent.nousresearch.com/install.sh" || true
   check_endpoint "Node.js 官方源" "https://nodejs.org/dist/index.json" || true

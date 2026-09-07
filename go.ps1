@@ -9,7 +9,7 @@
 #  runs install.ps1 with an explicit UTF-8 decode. End result: the
 #  student only pastes one clean line:
 #
-#     irm https://raw.githubusercontent.com/xitangwang/mac-onboarding-setup/main/go.ps1 | iex
+#     irm https://raw.githubusercontent.com/AIMarshallLee/mac-onboarding-setup/main/go.ps1 | iex
 #
 #  Detect-only mode: set $env:CHECK_ONLY=1 before running the line above.
 # ============================================================
@@ -58,8 +58,8 @@ function Wait-AfterFailure {
 Start-DiagnosticLog
 
 $installers = @(
-    'https://github.com/xitangwang/mac-onboarding-setup/raw/main/install.ps1',
-    'https://raw.githubusercontent.com/xitangwang/mac-onboarding-setup/main/install.ps1'
+    'https://github.com/AIMarshallLee/mac-onboarding-setup/raw/main/install.ps1',
+    'https://raw.githubusercontent.com/AIMarshallLee/mac-onboarding-setup/main/install.ps1'
 )
 
 try {

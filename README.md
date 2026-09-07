@@ -6,7 +6,9 @@ last_change: 2026-09-04 — 按最新对外预习手册补齐课前文件、数�
 
 # 深圳 AI 航海家大课 · 一键安装与课前检测助手
 
-> 制作者：[xitangwang](https://github.com/xitangwang)  
+> 原始制作者：[xitangwang](https://github.com/xitangwang)
+>
+> 深圳课程版维护：[AIMarshallLee](https://github.com/AIMarshallLee)
 > 使用场景：深圳 AI 航海家大课
 
 这是面向零基础学员的一键部署项目。按 2026-09-04 最新对外预习手册，深圳课程软件必装项是 Codex 和飞书桌面版；飞书 CLI、官方 Agent Skills、Hermes、Obsidian 继续保留为可选增强，不影响“自动环境检查已就绪”的最终判定。
@@ -24,13 +26,13 @@ last_change: 2026-09-04 — 按最新对外预习手册补齐课前文件、数�
 打开「终端」App，粘贴：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/xitangwang/mac-onboarding-setup/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/AIMarshallLee/mac-onboarding-setup/main/install.sh | bash
 ```
 
 只检测、不安装：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/xitangwang/mac-onboarding-setup/main/install.sh | bash -s -- --check
+curl -fsSL https://raw.githubusercontent.com/AIMarshallLee/mac-onboarding-setup/main/install.sh | bash -s -- --check
 ```
 
 ### Windows
@@ -38,7 +40,7 @@ curl -fsSL https://raw.githubusercontent.com/xitangwang/mac-onboarding-setup/mai
 按 `Win + R`，粘贴下面这一整行并回车：
 
 ```cmd
-cmd /k powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/xitangwang/mac-onboarding-setup/main/go.ps1 | iex"
+cmd /k powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/AIMarshallLee/mac-onboarding-setup/main/go.ps1 | iex"
 ```
 
 `cmd /k` 会保留外层窗口：即使 PowerShell 或安装脚本异常退出，错误信息也不会跟着闪退消失。启动器还会在桌面自动生成 `navigator-installer-日期时间.log` 诊断日志；安装失败时会等待按回车后再关闭。
@@ -46,13 +48,13 @@ cmd /k powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.g
 如果已经打开了 Windows PowerShell 或 Windows Terminal，也可以继续使用原命令：
 
 ```powershell
-irm https://raw.githubusercontent.com/xitangwang/mac-onboarding-setup/main/go.ps1 | iex
+irm https://raw.githubusercontent.com/AIMarshallLee/mac-onboarding-setup/main/go.ps1 | iex
 ```
 
 只检测、不安装：
 
 ```cmd
-cmd /k powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:CHECK_ONLY=1; irm https://raw.githubusercontent.com/xitangwang/mac-onboarding-setup/main/go.ps1 | iex"
+cmd /k powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:CHECK_ONLY=1; irm https://raw.githubusercontent.com/AIMarshallLee/mac-onboarding-setup/main/go.ps1 | iex"
 ```
 
 交互提示中：回车表示继续，`s` 表示跳过，`q` 表示退出。安装后建议重开终端再验证。

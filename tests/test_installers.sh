@@ -280,6 +280,11 @@ assert_file_contains 'README.md' 'Intel Mac' 'README documents Intel Mac limitat
 assert_file_contains 'README.md' 'Windows ARM64' 'README documents Windows ARM64 support'
 assert_file_contains 'README.md' '实时进度' 'README explains installer progress behavior in Chinese'
 assert_file_contains 'README.md' 'Mac 自动下载并安装官方 ChatGPT 桌面 App（内含 Codex）' 'README documents automatic Codex desktop installation'
+assert_file_contains 'README.md' 'raw.githubusercontent.com/AIMarshallLee/mac-onboarding-setup/main/install.sh' 'Mac one-click command uses the maintained fork'
+assert_file_contains 'README.md' 'raw.githubusercontent.com/AIMarshallLee/mac-onboarding-setup/main/go.ps1' 'Windows one-click command uses the maintained fork'
+assert_file_contains 'go.ps1' 'github.com/AIMarshallLee/mac-onboarding-setup/raw/main/install.ps1' 'Windows bootstrap downloads the maintained fork installer'
+assert_file_not_contains 'install.ps1' 'raw.githubusercontent.com/xitangwang/mac-onboarding-setup' 'Windows installer no longer redirects users to the upstream repository'
+assert_file_not_contains 'install.sh' 'raw.githubusercontent.com/xitangwang/mac-onboarding-setup' 'macOS installer no longer checks the upstream repository'
 
 printf '\nAssertions: %s passed, %s failed\n' "$PASS_COUNT" "$FAIL_COUNT"
 [ "$FAIL_COUNT" -eq 0 ]
